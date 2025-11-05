@@ -1,0 +1,4 @@
+mcp[cli]>=1.2.0
+uvicorn>=0.30
+starlette>=0.37
+fastmcp
