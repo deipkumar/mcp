@@ -229,8 +229,12 @@ TOOLS = {
         "inputSchema": {
             "type": "object",
             "properties": {
-                "rules": {"type": "array", "description": "Audience rules"},
-                "limit": {"type": "number", "description": "Sample size", "default": 5}
+                "rules": {
+                    "type": "array",
+                    "description": "Audience rules",
+                    "items": {"type": "object"}
+                },
+                "limit": {"type": "integer", "description": "Sample size", "default": 5}
             },
             "required": ["rules"]
         },
@@ -243,7 +247,11 @@ TOOLS = {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Audience name"},
-                "rules": {"type": "array", "description": "Audience rules"}
+                "rules": {
+                    "type": "array",
+                    "description": "Audience rules",
+                    "items": {"type": "object"}
+                }
             },
             "required": ["name", "rules"]
         },
@@ -274,7 +282,11 @@ TOOLS = {
             "type": "object",
             "properties": {
                 "audience_id": {"type": "string", "description": "Audience ID"},
-                "destinations": {"type": "array", "description": "Destination IDs"}
+                "destinations": {
+                    "type": "array",
+                    "description": "Destination IDs",
+                    "items": {"type": "string"}
+                }
             },
             "required": ["audience_id", "destinations"]
         },
