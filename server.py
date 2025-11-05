@@ -311,6 +311,11 @@ async def handle_mcp_request(request: Request):
                 }
             })
 
+        elif method == "notifications/initialized":
+            # MCP client sends this after receiving initialize response
+            # Notifications don't require a response body
+            return JSONResponse({"status": "ok"})
+
         elif method == "tools/list":
             tools_list = [
                 {
@@ -387,10 +392,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         auth = request.headers.get("authorization")
         if auth and auth.lower().startswith("bearer "):
             key = auth[7:].strip()
-        if key is None:
-            key = request.headers.get("x-api-key")
-        if key is None:
-            key = request.query_params.get("api_key")
+
         expected = API_KEY
         if expected and key != expected:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
