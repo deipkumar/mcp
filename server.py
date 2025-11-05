@@ -402,7 +402,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 app = Starlette(
     debug=True,
     routes=[
-        Route("/", handle_mcp_request, methods=["POST"]),
+        Route("/mcp", handle_mcp_request, methods=["POST"]),
     ],
 )
 
