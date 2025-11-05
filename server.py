@@ -1,19 +1,22 @@
+#!/usr/bin/env python3
+"""HTTP-based MCP server without SSE"""
+
 import os
 import uuid
 import random
 from datetime import datetime, timedelta, UTC
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional
 
+from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-
-from mcp.server.fastmcp import FastMCP
+from starlette.routing import Route
 
 # ---------------------------
 # Config & Auth
 # ---------------------------
-API_KEY = os.getenv("MCP_API_KEY", "dev-abc123")  # set in Vercel env
+API_KEY = os.getenv("MCP_API_KEY", "dev-abc123")
 
 # ---------------------------
 # Fake Data Generation
@@ -33,7 +36,7 @@ def make_customers(n: int = 5000) -> List[Dict[str, Any]]:
     for i in range(n):
         state = random.choices(STATES, weights=[18,11,13,8,10,8,6,6,6,7,7], k=1)[0]
         age = random.randint(18, 75)
-        dep = random.randint(800, 12000)  # monthly direct deposit
+        dep = random.randint(800, 12000)
         credit_score = int(max(480, min(850, random.gauss(690, 60))))
         has_cc = random.random() < 0.55
         has_mortgage = random.random() < 0.32
@@ -114,41 +117,7 @@ BASE_AUDIENCE_DEFINITIONS = {
             {"field": "digital_engagement", "op": "gte", "value": 50},
         ],
     },
-    "aud_seed_home_equity_cross_sell": {
-        "name": "Mortgage Clients Without Card",
-        "rules": [
-            {"field": "has_mortgage", "op": "eq", "value": True},
-            {"field": "monthly_deposit", "op": "gte", "value": 5000},
-            {"field": "has_credit_card", "op": "eq", "value": False},
-        ],
-    },
-    "aud_seed_student_banking": {
-        "name": "College Banking Bundle",
-        "rules": [
-            {"field": "is_student", "op": "eq", "value": True},
-            {"field": "age", "op": "lte", "value": 24},
-            {"field": "digital_engagement", "op": "gte", "value": 40},
-        ],
-    },
-    "aud_seed_digital_reengagement": {
-        "name": "Digital Re-Engagement",
-        "rules": [
-            {"field": "tenure_months", "op": "gte", "value": 12},
-            {"field": "monthly_deposit", "op": "gte", "value": 2000},
-            {"field": "digital_engagement", "op": "lte", "value": 20},
-        ],
-    },
 }
-
-BASE_ACTIVATION_DEFINITIONS = [
-    {"id": "act_seed_active_cash_email_web","audience_id": "aud_seed_ca_cash_rewards","destinations": ["dest_email", "dest_web"]},
-    {"id": "act_seed_premier_paid","audience_id": "aud_seed_premier_relationship","destinations": ["dest_web", "dest_paid"]},
-]
-
-BASE_CAMPAIGN_DEFINITIONS = [
-    {"id": "cmp_seed_active_cash_ca","name": "Active Cash Welcome - California","audience_id": "aud_seed_ca_cash_rewards","channel": "email","objective": "credit_card_acquisition"},
-    {"id": "cmp_seed_premier_deepening","name": "Premier Relationship Deepening","audience_id": "aud_seed_premier_relationship","channel": "web","objective": "relationship_deepening"},
-]
 
 def normalize_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     aliases = {"equals": "eq", "==": "eq", "!=": "neq", ">": "gt", ">=": "gte", "<": "lt", "<=": "lte"}
@@ -177,34 +146,13 @@ def _init_base_data():
             "id": aud_id, "name": config["name"], "rules": rules,
             "created_at": datetime.now(UTC).isoformat(), "estimated_count": len(matches),
         }
-    for activation in BASE_ACTIVATION_DEFINITIONS:
-        aud_id = activation["audience_id"]
-        if aud_id not in AUDIENCES:
-            continue
-        ACTIVATIONS[activation["id"]] = {
-            "id": activation["id"], "audience_id": aud_id, "destinations": activation["destinations"],
-            "status": "completed", "completed_at": datetime.now(UTC).isoformat(),
-        }
-    for campaign in BASE_CAMPAIGN_DEFINITIONS:
-        aud_id = campaign["audience_id"]
-        if aud_id not in AUDIENCES:
-            continue
-        audience_size = AUDIENCES[aud_id]["estimated_count"]
-        scheduled_for = campaign.get("scheduled_for") or (datetime.now(UTC) + timedelta(minutes=1))
-        scheduled_iso = scheduled_for.isoformat() if isinstance(scheduled_for, datetime) else scheduled_for
-        CAMPAIGNS[campaign["id"]] = {
-            "id": campaign["id"], "name": campaign["name"], "audience_id": aud_id,
-            "channel": campaign["channel"], "objective": campaign.get("objective", "credit_card_acquisition"),
-            "scheduled_for": scheduled_iso, "status": "delivered", "delivered_at": datetime.now(UTC).isoformat(),
-            "metrics": _campaign_metrics_from_audience_size(audience_size, campaign["channel"]),
-        }
+
+_init_base_data()
 
 # ---------------------------
-# MCP Server Definition
+# MCP Tool Implementations
 # ---------------------------
-mcp = FastMCP("gradial-audience-demo", streamable_http_path="/")  # endpoints at mount root
 
-@mcp.tool()
 def list_attributes() -> Dict[str, Any]:
     return {
         "attributes": {
@@ -221,18 +169,15 @@ def list_attributes() -> Dict[str, Any]:
         }
     }
 
-@mcp.tool()
 def list_destinations() -> Dict[str, Any]:
     return {"destinations": DESTINATIONS}
 
-@mcp.tool()
 def preview_audience(rules: List[Dict[str, Any]], limit: int = 5) -> Dict[str, Any]:
     rules = normalize_rules(rules)
     matches = apply_rules(CUSTOMERS, rules)
     sample = matches[: max(0, min(limit, len(matches)))]
     return {"estimated_count": len(matches), "sample": sample}
 
-@mcp.tool()
 def create_audience(name: str, rules: List[Dict[str, Any]]) -> Dict[str, Any]:
     rules = normalize_rules(rules)
     aud_id = f"aud_{uuid.uuid4().hex[:10]}"
@@ -243,11 +188,9 @@ def create_audience(name: str, rules: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
     return {"id": aud_id, "name": name, "estimated_count": len(matches)}
 
-@mcp.tool()
 def list_audiences() -> Dict[str, Any]:
     return {"audiences": list(AUDIENCES.values())}
 
-@mcp.tool()
 def estimate_audience(audience_id: str) -> Dict[str, Any]:
     a = AUDIENCES.get(audience_id)
     if not a:
@@ -256,7 +199,6 @@ def estimate_audience(audience_id: str) -> Dict[str, Any]:
     a["estimated_count"] = cnt
     return {"audience_id": audience_id, "estimated_count": cnt}
 
-@mcp.tool()
 def activate_audience(audience_id: str, destinations: List[str]) -> Dict[str, Any]:
     if audience_id not in AUDIENCES:
         return {"error": f"audience {audience_id} not found"}
@@ -267,30 +209,177 @@ def activate_audience(audience_id: str, destinations: List[str]) -> Dict[str, An
     }
     return {"activation_id": job_id, "status": "completed"}
 
-def _campaign_metrics_from_audience_size(n: int, channel: str) -> Dict[str, Any]:
-    base_open = 0.39 if channel == "email" else 0.0
-    base_ctr = 0.065 if channel in ("email", "web") else 0.02
-    base_apply = 0.011 if channel in ("email", "web") else 0.006
-    rnd = random.Random(n + len(channel))
-    open_rate = base_open + rnd.uniform(-0.03, 0.03) if channel == "email" else None
-    ctr = base_ctr + rnd.uniform(-0.01, 0.01)
-    apply_rate = base_apply + rnd.uniform(-0.005, 0.005)
-    sent = n
-    opens = int(sent * (open_rate or 0))
-    clicks = int(sent * ctr)
-    applications = int(sent * apply_rate)
-    approvals = int(applications * 0.72)
-    return {
-        "sent": sent, "opens": opens, "clicks": clicks,
-        "applications": applications, "approvals": approvals,
-        "open_rate": round(open_rate, 4) if open_rate is not None else None,
-        "ctr": round(ctr, 4), "apply_rate": round(apply_rate, 4)
-    }
-
-_init_base_data()
+# Tool registry
+TOOLS = {
+    "list_attributes": {
+        "name": "list_attributes",
+        "description": "List all available customer attributes and their operators",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "handler": lambda params: list_attributes()
+    },
+    "list_destinations": {
+        "name": "list_destinations",
+        "description": "List all available marketing destinations",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "handler": lambda params: list_destinations()
+    },
+    "preview_audience": {
+        "name": "preview_audience",
+        "description": "Preview an audience with given rules",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "rules": {"type": "array", "description": "Audience rules"},
+                "limit": {"type": "number", "description": "Sample size", "default": 5}
+            },
+            "required": ["rules"]
+        },
+        "handler": lambda params: preview_audience(**params)
+    },
+    "create_audience": {
+        "name": "create_audience",
+        "description": "Create a new audience",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Audience name"},
+                "rules": {"type": "array", "description": "Audience rules"}
+            },
+            "required": ["name", "rules"]
+        },
+        "handler": lambda params: create_audience(**params)
+    },
+    "list_audiences": {
+        "name": "list_audiences",
+        "description": "List all audiences",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "handler": lambda params: list_audiences()
+    },
+    "estimate_audience": {
+        "name": "estimate_audience",
+        "description": "Estimate audience size",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "audience_id": {"type": "string", "description": "Audience ID"}
+            },
+            "required": ["audience_id"]
+        },
+        "handler": lambda params: estimate_audience(**params)
+    },
+    "activate_audience": {
+        "name": "activate_audience",
+        "description": "Activate an audience to destinations",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "audience_id": {"type": "string", "description": "Audience ID"},
+                "destinations": {"type": "array", "description": "Destination IDs"}
+            },
+            "required": ["audience_id", "destinations"]
+        },
+        "handler": lambda params: activate_audience(**params)
+    },
+}
 
 # ---------------------------
-# HTTP Auth Middleware
+# HTTP Endpoints
+# ---------------------------
+
+async def handle_mcp_request(request: Request):
+    """Handle MCP JSON-RPC requests"""
+    try:
+        body = await request.json()
+        method = body.get("method")
+        params = body.get("params", {})
+        request_id = body.get("id", 1)
+
+        # Handle MCP protocol methods
+        if method == "initialize":
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": {}
+                    },
+                    "serverInfo": {
+                        "name": "gradial-audience-demo",
+                        "version": "1.0.0"
+                    }
+                }
+            })
+
+        elif method == "tools/list":
+            tools_list = [
+                {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "inputSchema": tool["inputSchema"]
+                }
+                for tool in TOOLS.values()
+            ]
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "tools": tools_list
+                }
+            })
+
+        elif method == "tools/call":
+            tool_name = params.get("name")
+            tool_params = params.get("arguments", {})
+
+            if tool_name not in TOOLS:
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32601,
+                        "message": f"Tool not found: {tool_name}"
+                    }
+                }, status_code=404)
+
+            tool = TOOLS[tool_name]
+            result = tool["handler"](tool_params)
+
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": str(result) if not isinstance(result, str) else result
+                        }
+                    ]
+                }
+            })
+
+        else:
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not found: {method}"
+                }
+            }, status_code=404)
+
+    except Exception as e:
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": -32603,
+                "message": f"Internal error: {str(e)}"
+            }
+        }, status_code=500)
+
+# ---------------------------
+# Auth Middleware
 # ---------------------------
 class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -308,13 +397,17 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 # ---------------------------
-# Build the MCP ASGI app (to be mounted by api/mcp.py)
+# Application
 # ---------------------------
-mcp_app = mcp.streamable_http_app()
-mcp_app.add_middleware(APIKeyMiddleware)
+app = Starlette(
+    debug=True,
+    routes=[
+        Route("/", handle_mcp_request, methods=["POST"]),
+    ],
+)
 
-__all__ = ["mcp_app", "APIKeyMiddleware", "mcp"]
+app.add_middleware(APIKeyMiddleware)
 
 if __name__ == "__main__":
-    # Local stdio mode (optional): uvicorn not required for local MCP clients
-    mcp.run(transport="stdio")
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
