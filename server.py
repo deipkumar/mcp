@@ -408,6 +408,9 @@ app = Starlette(
 
 app.add_middleware(APIKeyMiddleware)
 
+# Export as mcp_app for Railway compatibility
+mcp_app = app
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
